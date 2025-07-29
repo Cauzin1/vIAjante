@@ -6,6 +6,9 @@ import time
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from utils.pdf_generator import gerar_pdf
+from utils.csv_generator import csv_generator
+if not os.path.exists('arquivos'):
+    os.makedirs('arquivos')
 
 load_dotenv()
 
@@ -27,14 +30,14 @@ PAISES_EUROPA = [
     "belgica", "bielorrussia", "bosnia", "bulgaria",
     "chipre", "croacia", "dinamarca",
     "eslovaquia", "eslovenia", "espanha", "estonia",
-    "finlandia", "franca",
+    "finlandia", "frança",
     "georgia", "grecia", "holanda", "hungria",
     "irlanda", "islandia", "italia",
     "letonia", "liechtenstein", "lituania", "luxemburgo",
     "macedonia", "malta", "moldavia", "monaco", "montenegro",
     "noruega",
     "polonia", "portugal",
-    "reino unido", "romenia", "russia",
+    "reino unido", "romenia", "russia",  
     "san marino", "servia", "suecia", "suica",
     "turquia", "ucrania", "vaticano"
 ]
@@ -81,6 +84,40 @@ def formatar_resposta_gemini(texto: str) -> str:
     if len(texto) > 3000:
         texto = texto[:3000] + "\n[...] (continua no roteiro completo)"
     return texto
+
+def extrair_tabela(texto: str) -> str:
+    """Extrai a tabela do texto retornado pelo Gemini"""
+    # Padrão para encontrar a tabela (versão mais flexível)
+    padrao = r"(\|?\s*DATA\s*\|.*DIA\s*\|.*LOCAL\s*\|?)([\s\S]*?)(?=\n\n|\Z)"
+    match = re.search(padrao, texto, re.IGNORECASE)
+    
+    if not match:
+        # Tentar fallback: encontrar todas as linhas que parecem tabela
+        linhas_tabela = []
+        for linha in texto.split('\n'):
+            if '|' in linha and any(keyword in linha.lower() for keyword in ['data', 'dia', 'local']):
+                # Normalizar espaçamento
+                linha = '|'.join([col.strip() for col in linha.split('|')])
+                linhas_tabela.append(linha)
+        
+        if linhas_tabela:
+            return '\n'.join(linhas_tabela)
+        return None
+    
+    cabecalho = match.group(1).strip()
+    conteudo = match.group(2).strip()
+    
+    # Processar cada linha da tabela
+    linhas_validas = []
+    for linha in conteudo.split('\n'):
+        linha = linha.strip()
+        if linha.startswith('|') and linha.endswith('|'):
+            # Normalizar e manter apenas células válidas
+            celulas = [col.strip() for col in linha.split('|') if col.strip()]
+            if len(celulas) >= 3:  # DATA, DIA, LOCAL
+                linhas_validas.append('| ' + ' | '.join(celulas) + ' |')
+    
+    return cabecalho + '\n' + '\n'.join(linhas_validas)
 
 @app.route('/chat', methods=['POST'])
 def chat_endpoint():
@@ -223,37 +260,85 @@ def processar_mensagem(session_id: str, texto: str) -> str:
             time.sleep(2)
             
             prompt = f"""
-            Você é um especialista em viagens para Europa chamado Rogério. Crie um roteiro detalhado com base nestas informações:
+            Você é um especialista em viagens para Europa chamado vIAjante. Crie um roteiro detalhado com base nestas informações:
             - Destino: {dados_usuario['destino']}
             - Período: {dados_usuario['datas']}
             - Orçamento total: {dados_usuario['orcamento']}
-            
-            Inclua:
-            1. Itinerário diário com atrações principais (use emojis)
-            2. Sugestões de transporte entre cidades (com dicas locais)
-            3. Opções de hospedagem em 3 categorias (econômica, média, luxo)
-            4. Dicas pessoais de quem conhece bem o destino
-            5. Estimativa de custos por categoria
-            
-            Formate de forma amigável e pessoal, como se estivesse conversando com um amigo.
-            Assine como "Rogério - Seu Especialista em Viagens"
+
+            **Formato obrigatório:**
+            1. Primeiro, gere APENAS a tabela de itinerário no seguinte formato:
+
+            | DATA    | DIA            | LOCAL                                  |
+            |---------|----------------|----------------------------------------|
+            | 19-set  | Sexta-feira    | SP/Veneza Partida 21h20                |
+            | 20-set  | Sábado         | Veneza Chegada 18h10                   |
+
+            **Regras da tabela:**
+            - Use SEMPRE o formato DD-MMM para datas (ex: 19-set, 20-out)
+            - Dias da semana em português
+            - Local: máximo 40 caracteres
+            - NÃO inclua cabeçalhos adicionais ou texto extra
+
+            2. Após a tabela, inclua uma descrição detalhada com:
+               - Itinerário diário com atrações principais (use emojis)
+               - Sugestões de transporte entre cidades
+               - Opções de hospedagem em 3 categorias
+               - Dicas pessoais e estimativa de custos
+
+            **Exemplo completo:**
+            | DATA    | DIA            | LOCAL                                  |
+            | 19-set  | Sexta-feira    | SP/Veneza Partida 21h20                |
+            | 20-set  | Sábado         | Veneza Chegada 18h10                   |
+
+            [Descrição detalhada aqui...]
             """
             response = model.generate_content(prompt)
-            resposta_formatada = formatar_resposta_gemini(response.text)
-            dados_usuario['roteiro'] = resposta_formatada
+            resposta_completa = response.text
+            
+            print(f"🔍 Resposta completa do Gemini:\n{resposta_completa}")
+            
+            # Extrair tabela e descrição
+            tabela_itinerario = extrair_tabela(resposta_completa)
+            
+            if tabela_itinerario:
+                print(f"✅ Tabela extraída:\n{tabela_itinerario}")
+                descricao_detalhada = resposta_completa.replace(tabela_itinerario, "").strip()
+            else:
+                print("⚠️ Não foi possível extrair a tabela. Usando resposta completa.")
+                tabela_itinerario = "| DATA | DIA | LOCAL |\n"  # Tabela vazia
+                descricao_detalhada = resposta_completa
+            
+            # Armazenar na sessão
+            dados_usuario['tabela_itinerario'] = tabela_itinerario
+            dados_usuario['descricao_detalhada'] = descricao_detalhada
+            dados_usuario['roteiro_completo'] = resposta_completa
+            
             sessoes[session_id]['estado'] = "ROTEIRO_GERADO"
             
             # Pequeno delay final
             time.sleep(0.5)
             
-            return (f"🎉 *Prontinho! Acabei de finalizar seu roteiro para {dados_usuario['destino']}!*\n\n"
-                    f"Espero que goste das minhas sugestões - selecionei lugares incríveis pensando em você:\n\n"
-                    f"{resposta_formatada}\n\n"
-                    f"📌 *O que gostaria de fazer agora?*\n"
-                    f"- Digite `pdf` para receber este roteiro em PDF\n"
-                    f"- Digite `ajuda` para outras opções\n"
-                    f"- Digite `reiniciar` para criar uma nova viagem")
+            # Montar resposta para o usuário
+            resposta_usuario = (f"🎉 *Prontinho! Acabei de finalizar seu roteiro para {dados_usuario['destino']}!*\n\n")
+            
+            # Se a tabela foi extraída, mostre-a
+            if tabela_itinerario and len(tabela_itinerario.split('\n')) > 3:  # Mais que cabeçalho + linha separadora + 1 linha
+                resposta_usuario += f"Aqui está o resumo do seu itinerário:\n\n{tabela_itinerario}\n\n"
+            
+            resposta_usuario += (
+                f"📌 *O que gostaria de fazer agora?*\n"
+                f"- Digite `pdf` para receber o roteiro completo em PDF\n"
+                f"- Digite `csv` para receber o itinerário em formato de planilha\n"
+                f"- Digite `ajuda` para outras opções\n"
+                f"- Digite `reiniciar` para criar uma nova viagem"
+            )
+            
+            return resposta_usuario
+            
         except Exception as e:
+            import traceback
+            traceback.print_exc()
+            
             sessoes[session_id]['estado'] = "SAUDACAO"
             return (f"❌ *Opa! Algo deu errado aqui.* 😟\n"
                     f"Erro: {str(e)}\n\n"
@@ -284,12 +369,12 @@ def processar_mensagem(session_id: str, texto: str) -> str:
         elif texto == "pdf":
             try:
                 caminho_pdf = gerar_pdf(
-                    destino=dados_usuario['destino'],
-                    datas=dados_usuario['datas'],
-                    orcamento=dados_usuario['orcamento'],
-                    roteiro_texto=dados_usuario['roteiro'],
-                    session_id=session_id
-                )
+                destino=dados_usuario['destino'],
+                datas=dados_usuario['datas'],
+                tabela=dados_usuario['tabela_itinerario'],  # Tabela extraída
+                descricao=dados_usuario['descricao_detalhada'],  # Descrição detalhada
+                session_id=session_id
+)
                 return (f"📄 *Seu PDF está pronto!* ✅\n"
                         f"Você pode acessá-lo aqui: `{caminho_pdf}`\n\n"
                         f"Precisa de mais alguma coisa? Digite `ajuda` para ver opções.")
@@ -297,7 +382,25 @@ def processar_mensagem(session_id: str, texto: str) -> str:
                 return (f"❌ *Opa, tive um problema ao gerar o PDF* 😟\n"
                         f"Erro: {str(e)}\n\n"
                         f"Posso tentar novamente ou te ajudar com outra coisa?")
-        
+            
+        elif texto == "csv":
+            try:
+                caminho_csv = csv_generator(
+                    tabela=dados_usuario['tabela_itinerario'],
+                    session_id=session_id
+                )
+                base_url = "http://localhost:3000"  # Atualize para seu URL real
+                csv_url = f"{base_url}/arquivos/{os.path.basename(caminho_csv)}"
+                
+                return (f"📊 *Seu arquivo CSV está pronto!* ✅\n"
+                        f"Clique para baixar: {csv_url}\n\n"
+                        f"Precisa de mais alguma coisa? Digite `ajuda` para ver opções.")
+            except Exception as e:
+                traceback.print_exc()
+                return (f"❌ *Opa, tive um problema ao gerar o CSV* 😟\n"
+                        f"Erro: {str(e)}\n\n"
+                        f"Posso tentar novamente ou te ajudar com outra coisa?")
+            
         elif texto == "reiniciar":
             sessoes[session_id] = {'estado': 'SAUDACAO', 'dados': {}}
             return "🔄 Beleza! Vamos começar uma nova aventura. Para onde na Europa você quer viajar?"
@@ -308,6 +411,12 @@ def processar_mensagem(session_id: str, texto: str) -> str:
                     f"Digite `ajuda` para ver o que posso fazer por você.")
 
     return "❌ *Ops! Algo deu errado.* 😟\nPor favor, digite `reiniciar` para começar de novo."
+
+
+@app.route('/arquivos/<filename>')
+def download_file(filename):
+    return send_from_directory('arquivos', filename)
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=3000, debug=True)
