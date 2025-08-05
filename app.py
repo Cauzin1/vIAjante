@@ -1,16 +1,19 @@
+# app.py - Versão Final para Deploy com Telegram (Sintaxe Moderna)
+
 import os
 import re
-import time
 import traceback
-import requests
-import telegram
-from telegram.ext import Dispatcher, MessageHandler, Filters
+import asyncio
 from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
 from dotenv import load_dotenv
 import google.generativeai as genai
 
-# Utils
+# Importações da nova versão da biblioteca do Telegram
+import telegram
+from telegram import Update
+from telegram.ext import Application, MessageHandler, filters, ContextTypes
+
+# Seus outros imports (utils)
 from utils.pdf_generator import gerar_pdf
 from utils.csv_generator import csv_generator
 from utils.validators import validar_destino, validar_data, validar_orcamento, remover_acentos
@@ -23,6 +26,7 @@ load_dotenv()
 # Carrega as chaves do ambiente - ESSENCIAL PARA O RENDER
 GEMINI_KEY = os.getenv("GEMINI_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") # Ex: https://seu-app.onrender.com
 
 if not os.path.exists('arquivos'):
     os.makedirs('arquivos')
@@ -36,15 +40,14 @@ except Exception as e:
     exit(1)
 
 app = Flask(__name__)
-CORS(app)
-
-sessoes = {} # Armazenamento de sessões de usuários
+sessoes = {} # Armazenamento de sessões
 
 # ========================
-# LÓGICA DO BOT (INTACTA)
+# LÓGICA DO BOT (CÉREBRO)
 # ========================
 
 def extrair_tabela(texto: str) -> str:
+    """Extrai tabelas Markdown do texto de forma robusta."""
     linhas_tabela = []
     for linha in texto.split('\n'):
         linha = linha.strip()
@@ -56,8 +59,14 @@ def extrair_tabela(texto: str) -> str:
     return '\n'.join(linhas_tabela)
 
 def processar_mensagem(session_id: str, texto: str) -> str:
-    # Esta função é o "cérebro" do bot e permanece a mesma que já corrigimos.
-    # Ela gerencia os estados e gera as respostas.
+    """
+    Esta função é o "cérebro" do bot. Ela gerencia os estados da conversa 
+    e gera as respostas de forma síncrona.
+    """
+    # Garante que a sessão exista
+    if session_id not in sessoes:
+        sessoes[session_id] = {'estado': 'AGUARDANDO_DESTINO', 'dados': {}}
+
     estado = sessoes[session_id]['estado']
     dados_usuario = sessoes[session_id]['dados']
     texto_normalizado = texto.strip().lower()
@@ -66,8 +75,6 @@ def processar_mensagem(session_id: str, texto: str) -> str:
         sessoes[session_id] = {'estado': 'AGUARDANDO_DESTINO', 'dados': {}}
         return "🔄 Certo! Vamos começar uma nova viagem. Para onde na Europa você quer viajar?"
 
-    # ... (O resto da sua lógica de estados: AGUARDANDO_DESTINO, DATAS, ORCAMENTO, etc.)
-    # >>> INÍCIO DA LÓGICA DE ESTADOS <<<
     if estado == "AGUARDANDO_DESTINO":
         if not validar_destino(texto_normalizado):
             return "❌ *País não reconhecido* 😟\nPor favor, informe um *país europeu válido* (ex: Itália, França...)."
@@ -124,6 +131,10 @@ def processar_mensagem(session_id: str, texto: str) -> str:
             return f"❌ Opa! Algo deu errado ao gerar o roteiro: {str(e)}\n\nVamos recomeçar?"
 
     elif estado == "ROTEIRO_GERADO":
+        # Esta rota usa `request.host_url` que só está disponível no contexto de uma requisição Flask
+        # Por isso, vamos precisar passar a URL base para a função
+        base_url = dados_usuario.get("base_url", "")
+
         if texto_normalizado == "pdf":
             try:
                 caminho_pdf = gerar_pdf(
@@ -131,7 +142,6 @@ def processar_mensagem(session_id: str, texto: str) -> str:
                     tabela=dados_usuario['tabela_itinerario'], descricao=dados_usuario['descricao_detalhada'],
                     session_id=session_id
                 )
-                base_url = request.host_url
                 pdf_url = f"{base_url}arquivos/{os.path.basename(caminho_pdf)}"
                 return f"📄 *Seu PDF está pronto!* ✅\nClique para baixar: {pdf_url}"
             except ValueError as e:
@@ -143,7 +153,6 @@ def processar_mensagem(session_id: str, texto: str) -> str:
                     tabela=dados_usuario['tabela_itinerario'],
                     session_id=session_id
                 )
-                base_url = request.host_url
                 csv_url = f"{base_url}arquivos/{os.path.basename(caminho_csv)}"
                 return f"📊 *Seu arquivo CSV está pronto!* ✅\nClique para baixar: {csv_url}"
             except ValueError as e:
@@ -152,72 +161,77 @@ def processar_mensagem(session_id: str, texto: str) -> str:
             return "🤔 Não entendi... Digite `pdf`, `csv` ou `reiniciar`."
 
     return "Desculpe, não entendi o que você quis dizer." # Resposta padrão
-    # >>> FIM DA LÓGICA DE ESTADOS <<<
 
 
 # ========================
-# INTEGRAÇÃO COM TELEGRAM
+# INTEGRAÇÃO COM TELEGRAM (SINTAXE MODERNA)
 # ========================
 
-# Esta função será a ponte entre o Telegram e o nosso "cérebro" (processar_mensagem)
-def handle_telegram_message(update, context):
+# Constrói a aplicação do bot com o token
+application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+# Esta é a função principal que o Telegram chama. Ela é assíncrona.
+async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session_id = str(update.message.chat_id)
     texto_recebido = update.message.text
     
-    # Se for a primeira mensagem do usuário, criamos a sessão para ele
+    # Se for a primeira mensagem, criamos a sessão e enviamos a saudação
     if session_id not in sessoes:
         sessoes[session_id] = {'estado': 'AGUARDANDO_DESTINO', 'dados': {}}
-        # E enviamos a saudação inicial
         resposta = ("🌟 Olá! ✈️ Eu sou o vIAjante, seu especialista em viagens pela Europa.\n\n"
                     "Pra começar, me conta: pra qual *país* você quer viajar?")
     else:
-        # Se a sessão já existe, apenas processamos a mensagem
+        # Passa a URL base para a sessão, para que os links de download funcionem
+        sessoes[session_id]['dados']['base_url'] = WEBHOOK_URL or request.host_url
+
+        # Chama a nossa função de lógica síncrona
         resposta = processar_mensagem(session_id, texto_recebido)
 
-    # Envia a resposta de volta para o usuário no Telegram
-    # parse_mode=telegram.ParseMode.MARKDOWN é essencial para formatar o texto (*, `, etc.)
-    context.bot.send_message(chat_id=session_id, text=resposta, parse_mode=telegram.ParseMode.MARKDOWN)
+    # Envia a resposta de volta para o usuário
+    await context.bot.send_message(
+        chat_id=session_id, 
+        text=resposta, 
+        parse_mode=telegram.constants.ParseMode.MARKDOWN
+    )
 
-def handle_error(update, context):
-    """Loga os erros causados pelas atualizações."""
+# Função para logar erros
+async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     print(f"Update {update} causou o erro {context.error}")
+
+# Registra os handlers (gerenciadores de mensagem e erro) na aplicação
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_telegram_message))
+application.add_error_handler(handle_error)
 
 
 # ========================
 # ROTAS FLASK (SERVIDOR WEB)
 # ========================
 
-# Rota para servir os arquivos gerados (PDF, CSV)
 @app.route('/arquivos/<filename>')
 def download_file(filename):
     return send_from_directory('arquivos', filename, as_attachment=True)
 
-# Rota para o Webhook do Telegram
-@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
-def telegram_webhook():
-    bot = telegram.Bot(token=TELEGRAM_TOKEN)
-    dispatcher = Dispatcher(bot, None, workers=0, use_context=True)
-    
-    # Define que a função handle_telegram_message deve ser chamada para qualquer mensagem de texto
-    dispatcher.add_handler(MessageHandler(Filters.text & (~Filters.command), handle_telegram_message))
-    dispatcher.add_error_handler(handle_error)
-
-    try:
-        dispatcher.process_update(telegram.Update.de_json(request.get_json(force=True), bot))
-    except Exception as e:
-        print(f"Erro ao processar o webhook do Telegram: {e}")
-
+@app.route('/telegram_webhook', methods=['POST'])
+async def telegram_webhook():
+    await application.update_queue.put(Update.de_json(request.get_json(force=True), application.bot))
     return "ok", 200
 
-# Rota de "saúde" para verificar se o servidor está no ar
+@app.route('/set_webhook', methods=['GET'])
+async def set_webhook():
+    if WEBHOOK_URL:
+        # A URL do webhook DEVE ser a rota /telegram_webhook
+        webhook_full_url = f"{WEBHOOK_URL}/telegram_webhook"
+        await application.bot.set_webhook(webhook_full_url)
+        return f"Webhook configurado para: {webhook_full_url}"
+    return "WEBHOOK_URL não configurado nas variáveis de ambiente.", 400
+
 @app.route('/')
 def index():
-    return "Servidor do vIAjante está no ar!", 200
+    return "Servidor do vIAjante está no ar e pronto para receber webhooks!", 200
 
 # ========================
 # INICIALIZAÇÃO
 # ========================
 if __name__ == '__main__':
-    # Esta parte é usada apenas para testes locais.
-    # Em produção (no Render), o Gunicorn será usado.
-    app.run(host='0.0.0.0', port=3000, debug=True)
+    # Usado apenas para testes locais (não é usado no Render)
+    app.run(host='0.0.0.0', port=os.getenv("PORT", 3000), debug=True)
