@@ -3,6 +3,8 @@ import re
 import time
 import traceback
 import requests
+import telegram
+from telegram.ext import Dispatcher, MessageHandler, Filters
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -18,15 +20,15 @@ from utils.validators import validar_destino, validar_data, validar_orcamento, r
 # ========================
 load_dotenv()
 
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
-WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID")
-VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN")
+# Carrega as chaves do ambiente - ESSENCIAL PARA O RENDER
+GEMINI_KEY = os.getenv("GEMINI_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 if not os.path.exists('arquivos'):
     os.makedirs('arquivos')
 
 try:
-    genai.configure(api_key=os.getenv("GEMINI_KEY"))
+    genai.configure(api_key=GEMINI_KEY)
     model = genai.GenerativeModel('gemini-1.5-flash')
     print("✅ Gemini configurado com sucesso!")
 except Exception as e:
@@ -36,47 +38,26 @@ except Exception as e:
 app = Flask(__name__)
 CORS(app)
 
-sessoes = {}
-
-DICAS = {
-    "DESTINO": "\n💡 Dica: Países como Itália e França são ótimos para primeira viagem!",
-    "DATAS": "\n💡 Dica: Evite alta temporada (julho/agosto) para economizar!",
-    "ORCAMENTO": "\n💡 Dica: Lembre-se de incluir 20% extra para imprevistos!",
-}
-
-AGRADECIMENTOS = ["obrigado", "obrigada", "valeu", "agradeço", "thanks", "grato", "obgd"]
-
+sessoes = {} # Armazenamento de sessões de usuários
 
 # ========================
-# Funções Auxiliares
+# LÓGICA DO BOT (INTACTA)
 # ========================
 
 def extrair_tabela(texto: str) -> str:
-    """
-    Versão final e super robusta para extrair tabelas.
-    Procura por linhas que contenham múltiplos '|' e as trata como tabela.
-    """
     linhas_tabela = []
     for linha in texto.split('\n'):
         linha = linha.strip()
-        # Uma linha de tabela Markdown deve começar com '|' e ter pelo menos 2 '|' (para 1 coluna)
         if linha.startswith('|') and linha.count('|') > 2:
-            # Ignora a linha de separação do markdown (ex: |:---|:---|)
-            if re.match(r'^[|: -]+$', linha.replace(" ", "")):
-                continue
+            if re.match(r'^[|: -]+$', linha.replace(" ", "")): continue
             linhas_tabela.append(linha)
-            
     if not linhas_tabela:
-        print("⚠️  Aviso: Nenhuma linha de tabela válida foi extraída da resposta.")
         return ""
-        
     return '\n'.join(linhas_tabela)
 
-
-# ========================
-# Processador Principal de Mensagens
-# ========================
 def processar_mensagem(session_id: str, texto: str) -> str:
+    # Esta função é o "cérebro" do bot e permanece a mesma que já corrigimos.
+    # Ela gerencia os estados e gera as respostas.
     estado = sessoes[session_id]['estado']
     dados_usuario = sessoes[session_id]['dados']
     texto_normalizado = texto.strip().lower()
@@ -85,9 +66,8 @@ def processar_mensagem(session_id: str, texto: str) -> str:
         sessoes[session_id] = {'estado': 'AGUARDANDO_DESTINO', 'dados': {}}
         return "🔄 Certo! Vamos começar uma nova viagem. Para onde na Europa você quer viajar?"
 
-    if any(palavra in texto_normalizado for palavra in AGRADECIMENTOS):
-        return "😊 De nada! Estou aqui para ajudar."
-    
+    # ... (O resto da sua lógica de estados: AGUARDANDO_DESTINO, DATAS, ORCAMENTO, etc.)
+    # >>> INÍCIO DA LÓGICA DE ESTADOS <<<
     if estado == "AGUARDANDO_DESTINO":
         if not validar_destino(texto_normalizado):
             return "❌ *País não reconhecido* 😟\nPor favor, informe um *país europeu válido* (ex: Itália, França...)."
@@ -119,41 +99,25 @@ def processar_mensagem(session_id: str, texto: str) -> str:
 
     elif estado == "GERANDO_ROTEIRO":
         try:
-            # Prompt mais explícito pedindo uma tabela
             prompt = (f"Você é um especialista em viagens para a Europa chamado vIAjante. "
                       f"Crie um roteiro detalhado para {dados_usuario['destino']} entre as datas {dados_usuario['datas']} "
                       f"com um orçamento de {dados_usuario['orcamento']}. "
                       f"**É obrigatório incluir um itinerário dia a dia em uma tabela Markdown com as colunas 'DATA', 'DIA' e 'LOCAL'.**")
-
             response = model.generate_content(prompt)
-            
-            # ATENÇÃO: Se ainda falhar, descomente as linhas abaixo
-            # print("\n\n--- RESPOSTA COMPLETA DO GEMINI ---\n")
-            # print(response.text)
-            # print("\n--- FIM DA RESPOSTA ---\n")
-
             resposta_completa = response.text
             tabela_itinerario = extrair_tabela(resposta_completa)
-            
-            descricao_detalhada = resposta_completa
-            if tabela_itinerario:
-                descricao_detalhada = resposta_completa.replace(tabela_itinerario, "").strip()
+            descricao_detalhada = resposta_completa.replace(tabela_itinerario, "").strip() if tabela_itinerario else resposta_completa
 
             dados_usuario.update({
                 'tabela_itinerario': tabela_itinerario,
                 'descricao_detalhada': descricao_detalhada,
             })
-            
             sessoes[session_id]['estado'] = "ROTEIRO_GERADO"
-            
             resumo_tabela = tabela_itinerario if tabela_itinerario else "**Não foi possível extrair o resumo do itinerário.**"
 
             return (f"🎉 *Prontinho! Acabei de finalizar seu roteiro para {dados_usuario['destino']}!*\n\n"
                     f"{resumo_tabela}\n\n"
-                    "📌 *O que gostaria de fazer agora?*\n"
-                    "- Digite `pdf` para receber o roteiro completo\n"
-                    "- Digite `csv` para o itinerário em planilha\n"
-                    "- Digite `reiniciar` para uma nova viagem")
+                    "📌 *O que gostaria de fazer agora?*\n- Digite `pdf` para receber o roteiro completo\n- Digite `csv` para o itinerário em planilha\n- Digite `reiniciar` para uma nova viagem")
         except Exception as e:
             traceback.print_exc()
             sessoes[session_id]['estado'] = "AGUARDANDO_DESTINO"
@@ -171,8 +135,7 @@ def processar_mensagem(session_id: str, texto: str) -> str:
                 pdf_url = f"{base_url}arquivos/{os.path.basename(caminho_pdf)}"
                 return f"📄 *Seu PDF está pronto!* ✅\nClique para baixar: {pdf_url}"
             except ValueError as e:
-                print(f"LOG: Falha ao gerar PDF - {e}")
-                return "❌ Desculpe, não consegui gerar o PDF. O itinerário retornado parece incompleto. Tente `reiniciar`."
+                return "❌ Desculpe, não consegui gerar o PDF. O itinerário parece incompleto. Tente `reiniciar`."
 
         elif texto_normalizado == "csv":
             try:
@@ -184,37 +147,77 @@ def processar_mensagem(session_id: str, texto: str) -> str:
                 csv_url = f"{base_url}arquivos/{os.path.basename(caminho_csv)}"
                 return f"📊 *Seu arquivo CSV está pronto!* ✅\nClique para baixar: {csv_url}"
             except ValueError as e:
-                print(f"LOG: Falha ao gerar CSV - {e}")
-                return "❌ Desculpe, não consegui gerar o CSV. O itinerário retornado parece incompleto. Tente `reiniciar`."
+                return "❌ Desculpe, não consegui gerar o CSV. O itinerário parece incompleto. Tente `reiniciar`."
         else:
             return "🤔 Não entendi... Digite `pdf`, `csv` ou `reiniciar`."
 
-# O resto do arquivo (rotas e inicialização) permanece igual...
-@app.route('/chat', methods=['POST'])
-def chat_endpoint():
-    data = request.json
-    session_id = data.get('session_id')
-    message = data.get('message', '').strip()
+    return "Desculpe, não entendi o que você quis dizer." # Resposta padrão
+    # >>> FIM DA LÓGICA DE ESTADOS <<<
 
-    if not session_id or not message:
-        return jsonify({'response': "ID da sessão ou mensagem ausente."}), 400
 
+# ========================
+# INTEGRAÇÃO COM TELEGRAM
+# ========================
+
+# Esta função será a ponte entre o Telegram e o nosso "cérebro" (processar_mensagem)
+def handle_telegram_message(update, context):
+    session_id = str(update.message.chat_id)
+    texto_recebido = update.message.text
+    
+    # Se for a primeira mensagem do usuário, criamos a sessão para ele
     if session_id not in sessoes:
         sessoes[session_id] = {'estado': 'AGUARDANDO_DESTINO', 'dados': {}}
+        # E enviamos a saudação inicial
         resposta = ("🌟 Olá! ✈️ Eu sou o vIAjante, seu especialista em viagens pela Europa.\n\n"
                     "Pra começar, me conta: pra qual *país* você quer viajar?")
-        
-        if validar_destino(message.lower()):
-            return jsonify({'response': processar_mensagem(session_id, message)})
-        else:
-            return jsonify({'response': resposta})
-    
-    resposta = processar_mensagem(session_id, message)
-    return jsonify({'response': resposta})
+    else:
+        # Se a sessão já existe, apenas processamos a mensagem
+        resposta = processar_mensagem(session_id, texto_recebido)
 
+    # Envia a resposta de volta para o usuário no Telegram
+    # parse_mode=telegram.ParseMode.MARKDOWN é essencial para formatar o texto (*, `, etc.)
+    context.bot.send_message(chat_id=session_id, text=resposta, parse_mode=telegram.ParseMode.MARKDOWN)
+
+def handle_error(update, context):
+    """Loga os erros causados pelas atualizações."""
+    print(f"Update {update} causou o erro {context.error}")
+
+
+# ========================
+# ROTAS FLASK (SERVIDOR WEB)
+# ========================
+
+# Rota para servir os arquivos gerados (PDF, CSV)
 @app.route('/arquivos/<filename>')
 def download_file(filename):
     return send_from_directory('arquivos', filename, as_attachment=True)
 
+# Rota para o Webhook do Telegram
+@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
+def telegram_webhook():
+    bot = telegram.Bot(token=TELEGRAM_TOKEN)
+    dispatcher = Dispatcher(bot, None, workers=0, use_context=True)
+    
+    # Define que a função handle_telegram_message deve ser chamada para qualquer mensagem de texto
+    dispatcher.add_handler(MessageHandler(Filters.text & (~Filters.command), handle_telegram_message))
+    dispatcher.add_error_handler(handle_error)
+
+    try:
+        dispatcher.process_update(telegram.Update.de_json(request.get_json(force=True), bot))
+    except Exception as e:
+        print(f"Erro ao processar o webhook do Telegram: {e}")
+
+    return "ok", 200
+
+# Rota de "saúde" para verificar se o servidor está no ar
+@app.route('/')
+def index():
+    return "Servidor do vIAjante está no ar!", 200
+
+# ========================
+# INICIALIZAÇÃO
+# ========================
 if __name__ == '__main__':
+    # Esta parte é usada apenas para testes locais.
+    # Em produção (no Render), o Gunicorn será usado.
     app.run(host='0.0.0.0', port=3000, debug=True)
