@@ -1,4 +1,4 @@
-# app.py - Versão Final de Depuração "Caixa-Preta"
+# app.py - Versão Final e Completa
 
 import os
 import re
@@ -114,17 +114,46 @@ def processar_mensagem(session_id: str, texto: str, base_url: str) -> str:
             print("DEBUG: Roteiro gerado e salvo. Novo estado: ROTEIRO_GERADO.")
             resumo_tabela = tabela_itinerario if tabela_itinerario else "**Não foi possível extrair o resumo do itinerário.**"
             return (f"🎉 *Prontinho!* Roteiro para *{dados_usuario['destino']}*:\n\n{resumo_tabela}\n\n"
-                    "O que fazer agora?\n- Digite `pdf` para o roteiro completo\n- Digite `csv` para a planilha")
+                    "O que fazer agora?\n- Digite `pdf` para o roteiro completo\n- Digite `csv` para a planilha\n- Digite `reiniciar` para começar de novo")
         except Exception as e:
             print(f"!!!!!!!!!! ERRO NA GERAÇÃO DO ROTEIRO: {e} !!!!!!!!!!")
             traceback.print_exc()
             sessoes[session_id]['estado'] = "AGUARDANDO_DESTINO"
             return f"❌ Opa! Algo deu errado ao gerar o roteiro. Pode ter sido um problema com a API. Vamos recomeçar?"
 
+    # >>> ALTERAÇÃO AQUI: Lógica completa para PDF/CSV foi restaurada <<<
     elif estado == "ROTEIRO_GERADO":
         print("DEBUG: [Estado ROTEIRO_GERADO]")
-        # ... (Sua lógica para PDF/CSV)
-        return "DEBUG: Lógica para PDF/CSV a ser implementada."
+        base_url_para_links = dados_usuario.get("base_url", "")
+        if not base_url_para_links:
+            print("AVISO: base_url não encontrada na sessão para gerar links de download.")
+        
+        if texto_normalizado == "pdf":
+            try:
+                print("DEBUG: Gerando PDF...")
+                caminho_pdf = gerar_pdf(
+                    destino=dados_usuario['destino'], datas=dados_usuario['datas'],
+                    tabela=dados_usuario['tabela_itinerario'], descricao=dados_usuario['descricao_detalhada'],
+                    session_id=session_id)
+                pdf_url = f"{base_url_para_links}/arquivos/{os.path.basename(caminho_pdf)}"
+                return f"📄 *Seu PDF está pronto!* ✅\nClique para baixar: {pdf_url}"
+            except ValueError as e:
+                print(f"DEBUG: Erro ao gerar PDF (ValueError): {e}")
+                return "❌ Desculpe, não consegui gerar o PDF. O itinerário parece incompleto."
+
+        elif texto_normalizado == "csv":
+            try:
+                print("DEBUG: Gerando CSV...")
+                caminho_csv = csv_generator(
+                    tabela=dados_usuario['tabela_itinerario'],
+                    session_id=session_id)
+                csv_url = f"{base_url_para_links}/arquivos/{os.path.basename(caminho_csv)}"
+                return f"📊 *Seu arquivo CSV está pronto!* ✅\nClique para baixar: {csv_url}"
+            except ValueError as e:
+                print(f"DEBUG: Erro ao gerar CSV (ValueError): {e}")
+                return "❌ Desculpe, não consegui gerar o CSV. O itinerário parece incompleto."
+        else:
+            return "🤔 Não entendi... Digite `pdf`, `csv` ou `reiniciar`."
 
     return "DEBUG: Fim da função, nenhuma condição atendida."
 
@@ -159,17 +188,24 @@ async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_
         traceback.print_exc()
         await context.bot.send_message(chat_id=session_id, text="Desculpe, encontrei um erro interno grave.")
 
-# ... (Resto do código: handle_error, rotas Flask)
 async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     print(f"Update {update} causou o erro {context.error}")
+
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_telegram_message))
 application.add_error_handler(handle_error)
 
+# --- Rotas Flask ---
 @app.route('/arquivos/<filename>')
 def download_file(filename): return send_from_directory('arquivos', filename, as_attachment=True)
+
 @app.route('/telegram_webhook', methods=['POST'])
 async def telegram_webhook():
     await application.update_queue.put(Update.de_json(request.get_json(force=True), application.bot))
     return "ok", 200
+
 @app.route('/')
 def index(): return "Servidor do vIAjante está no ar!", 200
+
+# --- Inicialização ---
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=os.getenv("PORT", 3000), debug=True)
