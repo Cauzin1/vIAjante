@@ -1,10 +1,10 @@
-# app.py - Versão Final para Deploy com Telegram (Sintaxe Moderna)
+# app.py - Versão Final e Completa para Produção
 
 import os
 import re
 import traceback
 import asyncio
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, send_from_directory
 from dotenv import load_dotenv
 import google.generativeai as genai
 
@@ -26,7 +26,7 @@ load_dotenv()
 # Carrega as chaves do ambiente - ESSENCIAL PARA O RENDER
 GEMINI_KEY = os.getenv("GEMINI_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL") # Ex: https://seu-app.onrender.com
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") 
 
 if not os.path.exists('arquivos'):
     os.makedirs('arquivos')
@@ -58,15 +58,18 @@ def extrair_tabela(texto: str) -> str:
         return ""
     return '\n'.join(linhas_tabela)
 
-def processar_mensagem(session_id: str, texto: str) -> str:
+# >>> ALTERAÇÃO AQUI: A função agora aceita 'base_url' como argumento <<<
+def processar_mensagem(session_id: str, texto: str, base_url: str) -> str:
     """
     Esta função é o "cérebro" do bot. Ela gerencia os estados da conversa 
     e gera as respostas de forma síncrona.
     """
-    # Garante que a sessão exista
     if session_id not in sessoes:
         sessoes[session_id] = {'estado': 'AGUARDANDO_DESTINO', 'dados': {}}
 
+    # Armazena a base_url na sessão para uso posterior
+    sessoes[session_id]['dados']['base_url'] = base_url
+    
     estado = sessoes[session_id]['estado']
     dados_usuario = sessoes[session_id]['dados']
     texto_normalizado = texto.strip().lower()
@@ -131,77 +134,78 @@ def processar_mensagem(session_id: str, texto: str) -> str:
             return f"❌ Opa! Algo deu errado ao gerar o roteiro: {str(e)}\n\nVamos recomeçar?"
 
     elif estado == "ROTEIRO_GERADO":
-        # Esta rota usa `request.host_url` que só está disponível no contexto de uma requisição Flask
-        # Por isso, vamos precisar passar a URL base para a função
-        base_url = dados_usuario.get("base_url", "")
-
+        base_url_para_links = dados_usuario.get("base_url", "")
+        if not base_url_para_links:
+            print("AVISO: base_url não encontrada na sessão para gerar links de download.")
+        
         if texto_normalizado == "pdf":
             try:
                 caminho_pdf = gerar_pdf(
                     destino=dados_usuario['destino'], datas=dados_usuario['datas'],
                     tabela=dados_usuario['tabela_itinerario'], descricao=dados_usuario['descricao_detalhada'],
-                    session_id=session_id
-                )
-                pdf_url = f"{base_url}arquivos/{os.path.basename(caminho_pdf)}"
+                    session_id=session_id)
+                pdf_url = f"{base_url_para_links}/arquivos/{os.path.basename(caminho_pdf)}"
                 return f"📄 *Seu PDF está pronto!* ✅\nClique para baixar: {pdf_url}"
             except ValueError as e:
-                return "❌ Desculpe, não consegui gerar o PDF. O itinerário parece incompleto. Tente `reiniciar`."
+                return "❌ Desculpe, não consegui gerar o PDF. O itinerário parece incompleto."
 
         elif texto_normalizado == "csv":
             try:
                 caminho_csv = csv_generator(
                     tabela=dados_usuario['tabela_itinerario'],
-                    session_id=session_id
-                )
-                csv_url = f"{base_url}arquivos/{os.path.basename(caminho_csv)}"
+                    session_id=session_id)
+                csv_url = f"{base_url_para_links}/arquivos/{os.path.basename(caminho_csv)}"
                 return f"📊 *Seu arquivo CSV está pronto!* ✅\nClique para baixar: {csv_url}"
             except ValueError as e:
-                return "❌ Desculpe, não consegui gerar o CSV. O itinerário parece incompleto. Tente `reiniciar`."
+                return "❌ Desculpe, não consegui gerar o CSV. O itinerário parece incompleto."
         else:
             return "🤔 Não entendi... Digite `pdf`, `csv` ou `reiniciar`."
 
-    return "Desculpe, não entendi o que você quis dizer." # Resposta padrão
-
+    return "Desculpe, não entendi o que você quis dizer."
 
 # ========================
-# INTEGRAÇÃO COM TELEGRAM (SINTAXE MODERNA)
+# INTEGRAÇÃO COM TELEGRAM (SINTAXE MODERNA E SEGURA)
 # ========================
 
-# Constrói a aplicação do bot com o token
+if not TELEGRAM_TOKEN:
+    raise ValueError("Token do Telegram não encontrado! Verifique a variável de ambiente TELEGRAM_TOKEN.")
+
 application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-# Esta é a função principal que o Telegram chama. Ela é assíncrona.
 async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session_id = str(update.message.chat_id)
     texto_recebido = update.message.text
-    
-    # Se for a primeira mensagem, criamos a sessão e enviamos a saudação
-    if session_id not in sessoes:
-        sessoes[session_id] = {'estado': 'AGUARDANDO_DESTINO', 'dados': {}}
-        resposta = ("🌟 Olá! ✈️ Eu sou o vIAjante, seu especialista em viagens pela Europa.\n\n"
-                    "Pra começar, me conta: pra qual *país* você quer viajar?")
-    else:
-        # Passa a URL base para a sessão, para que os links de download funcionem
-        sessoes[session_id]['dados']['base_url'] = WEBHOOK_URL or request.host_url
+    print(f"--- 1. MENSAGEM RECEBIDA --- Chat ID: {session_id}, Texto: '{texto_recebido}'")
 
-        # Chama a nossa função de lógica síncrona
-        resposta = processar_mensagem(session_id, texto_recebido)
+    try:
+        if session_id not in sessoes:
+            sessoes[session_id] = {'estado': 'AGUARDANDO_DESTINO', 'dados': {}}
+            print("--- 2a. Nova sessão criada. Enviando saudação. ---")
+            resposta = ("🌟 Olá! ✈️ Eu sou o vIAjante, seu especialista em viagens pela Europa.\n\n"
+                        "Pra começar, me conta: pra qual *país* você quer viajar?")
+        else:
+            print(f"--- 2b. Sessão existente. Estado: {sessoes[session_id]['estado']}. Processando... ---")
+            # >>> ALTERAÇÃO AQUI: Passa a WEBHOOK_URL para a função de processamento <<<
+            resposta = processar_mensagem(session_id, texto_recebido, WEBHOOK_URL)
+            print(f"--- 3. Resposta gerada pela lógica do bot. ---")
 
-    # Envia a resposta de volta para o usuário
-    await context.bot.send_message(
-        chat_id=session_id, 
-        text=resposta, 
-        parse_mode=telegram.constants.ParseMode.MARKDOWN
-    )
+        await context.bot.send_message(
+            chat_id=session_id, text=resposta, parse_mode=telegram.constants.ParseMode.MARKDOWN
+        )
+        print(f"--- 4. Resposta enviada com sucesso para o Telegram. ---")
 
-# Função para logar erros
+    except Exception as e:
+        print(f"!!!!!!!!!! ERRO DURANTE O PROCESSAMENTO !!!!!!!!!!")
+        print(traceback.format_exc())
+        await context.bot.send_message(
+            chat_id=session_id, text="Desculpe, encontrei um erro interno. A equipe técnica já foi notificada."
+        )
+
 async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     print(f"Update {update} causou o erro {context.error}")
 
-# Registra os handlers (gerenciadores de mensagem e erro) na aplicação
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_telegram_message))
 application.add_error_handler(handle_error)
-
 
 # ========================
 # ROTAS FLASK (SERVIDOR WEB)
@@ -216,15 +220,6 @@ async def telegram_webhook():
     await application.update_queue.put(Update.de_json(request.get_json(force=True), application.bot))
     return "ok", 200
 
-@app.route('/set_webhook', methods=['GET'])
-async def set_webhook():
-    if WEBHOOK_URL:
-        # A URL do webhook DEVE ser a rota /telegram_webhook
-        webhook_full_url = f"{WEBHOOK_URL}/telegram_webhook"
-        await application.bot.set_webhook(webhook_full_url)
-        return f"Webhook configurado para: {webhook_full_url}"
-    return "WEBHOOK_URL não configurado nas variáveis de ambiente.", 400
-
 @app.route('/')
 def index():
     return "Servidor do vIAjante está no ar e pronto para receber webhooks!", 200
@@ -233,5 +228,4 @@ def index():
 # INICIALIZAÇÃO
 # ========================
 if __name__ == '__main__':
-    # Usado apenas para testes locais (não é usado no Render)
     app.run(host='0.0.0.0', port=os.getenv("PORT", 3000), debug=True)
