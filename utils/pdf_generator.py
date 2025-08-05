@@ -1,130 +1,66 @@
-# utils/pdf_generator.py
-
 from weasyprint import HTML
 from datetime import datetime
 import os
+import re
 
 def gerar_pdf(destino: str, datas: str, tabela: str, descricao: str, session_id: str) -> str:
-    # Converter tabela Markdown para HTML
     tabela_html = ""
-    if tabela:
-        linhas = tabela.split('\n')
-        tabela_html = "<table border='1' cellpadding='5' style='border-collapse: collapse; width: 100%; margin-bottom: 20px;'>"
-        for i, linha in enumerate(linhas):
-            if '|' in linha:
-                cells = [cell.strip() for cell in linha.split('|') if cell.strip()]
-                if i == 0:  # Cabeçalho
-                    tabela_html += "<thead><tr>"
-                    for cell in cells:
-                        tabela_html += f"<th class='cabecalho-itinerario'>{cell}</th>"
-                    tabela_html += "</tr></thead><tbody>"
-                else:  # Linhas de dados
-                    tabela_html += "<tr>"
-                    for cell in cells:
-                        tabela_html += f"<td>{cell}</td>"
-                    tabela_html += "</tr>"
-        tabela_html += "</tbody></table>"
     
-    # Criar conteúdo HTML
+    # Validação robusta para a tabela
+    if tabela and tabela.count('|') > 2:
+        linhas = tabela.strip().splitlines()
+        linhas_validas = [l for l in linhas if '|' in l and not re.match(r'^[|: -]+$', l.replace(" ", ""))]
+
+        if len(linhas_validas) > 0:
+            tabela_html = "<table class='itinerario-table'>"
+            # Cabeçalho
+            cabecalho_cells = [cell.strip() for cell in linhas_validas[0].split('|')][1:-1]
+            tabela_html += "<thead><tr>"
+            for cell in cabecalho_cells:
+                tabela_html += f"<th>{cell}</th>"
+            tabela_html += "</tr></thead>"
+            
+            # Corpo da tabela
+            tabela_html += "<tbody>"
+            for linha in linhas_validas[1:]:
+                tabela_html += "<tr>"
+                corpo_cells = [cell.strip() for cell in linha.split('|')][1:-1]
+                for cell in corpo_cells:
+                    tabela_html += f"<td>{cell}</td>"
+                tabela_html += "</tr>"
+            tabela_html += "</tbody></table>"
+    
     html_content = f"""
     <html>
     <head>
         <meta charset="UTF-8">
         <style>
-            body {{
-                font-family: 'Arial', sans-serif;
-                margin: 2em;
-                color: #333;
-                line-height: 1.6;
-            }}
-            h1 {{
-                color: #2e86de;
-                border-bottom: 2px solid #2e86de;
-                padding-bottom: 10px;
-            }}
-            .header-info {{
-                background-color: #f1f0fa;
-                padding: 15px;
-                border-radius: 5px;
-                margin-bottom: 20px;
-            }}
-            .section {{
-                margin-bottom: 25px;
-            }}
-            .section-title {{
-                color: #e74c3c;
-                border-left: 4px solid #e74c3c;
-                padding-left: 10px;
-                margin-top: 25px;
-            }}
-            .itinerario {{
-                margin-top: 20px;
-            }}
-            table {{
-                width: 100%;
-                margin-bottom: 20px;
-                border-collapse: collapse;
-            }}
-            th,
-            .cabecalho-itinerario {{
-                background-color: #e74c3c;
-                color: white;
-                text-align: left;
-                padding: 10px;
-            }}
-            td {{
-                padding: 8px;
-                border-bottom: 1px solid #ddd;
-            }}
-            tr:nth-child(even) {{
-                background-color: #f9f9f9;
-            }}
-            .footer {{
-                margin-top: 40px;
-                text-align: center;
-                font-size: 12px;
-                color: #777;
-            }}
+            body {{ font-family: 'Helvetica', 'Arial', sans-serif; margin: 2em; color: #333; }}
+            h1 {{ color: #0056b3; }}
+            .header-info {{ background-color: #f0f8ff; padding: 15px; border-radius: 8px; margin-bottom: 20px; }}
+            .section-title {{ color: #d9534f; border-bottom: 1px solid #eee; padding-bottom: 5px; margin-top: 30px;}}
+            .itinerario-table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
+            .itinerario-table th {{ background-color: #0056b3; color: white; padding: 10px; }}
+            .itinerario-table td {{ padding: 8px; border-bottom: 1px solid #ddd; }}
+            .footer {{ margin-top: 40px; text-align: center; font-size: 0.8em; color: #777; }}
         </style>
     </head>
     <body>
         <h1>Roteiro de Viagem: {destino}</h1>
-        
         <div class="header-info">
             <p><strong>Período:</strong> {datas}</p>
-            <p><strong>Gerado em:</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
         </div>
-        
-        <div class="section">
-            <h2 class="section-title">Itinerário</h2>
-            <div class="itinerario">
-                {tabela_html}
-            </div>
-        </div>
-        
-        <div class="section">
-            <h2 class="section-title">Detalhes da Viagem</h2>
-            <div class="descricao">
-                {descricao.replace('\n', '<br>')}
-            </div>
-        </div>
-        
-        <div class="footer">
-            <p>Roteiro gerado por vIAjante - Seu assistente de viagens</p>
-            <p>ID da Sessão: {session_id}</p>
-        </div>
+        <h2 class="section-title">Itinerário</h2>
+        {tabela_html}
+        <h2 class="section-title">Detalhes e Dicas</h2>
+        <div>{descricao.replace('*', '').replace('**', '').replace('\n', '<br>')}</div>
+        <div class="footer"><p>Gerado por vIAjante</p></div>
     </body>
     </html>
     """
     
-    # Criar nome do arquivo
-    nome_arquivo = f"roteiro_{destino}_{session_id[:6]}.pdf"
-    caminho = os.path.join('arquivos', nome_arquivo)
-    
-    # Garantir que o diretório existe
     os.makedirs('arquivos', exist_ok=True)
-    
-    # Gerar PDF
+    nome_arquivo = f"roteiro_{destino.lower()}_{session_id[:6]}.pdf"
+    caminho = os.path.join('arquivos', nome_arquivo)
     HTML(string=html_content).write_pdf(caminho)
     return caminho
-
