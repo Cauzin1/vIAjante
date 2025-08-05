@@ -1,4 +1,4 @@
-# app.py - Versão Final e Completa
+# app.py - Versão de Teste de Eliminação (Sem chamada à API Gemini)
 
 import os
 import re
@@ -99,29 +99,15 @@ def processar_mensagem(session_id: str, texto: str, base_url: str) -> str:
         return (f"⏱️ *Perfeito! Estou preparando seu roteiro para {dados_usuario['destino']}...*\n"
                 "Isso pode levar alguns segundos. Para continuar e gerar, pode me mandar um `ok`.")
 
+    # >>> ALTERAÇÃO PARA TESTE AQUI <<<
     elif estado == "GERANDO_ROTEIRO":
-        print("DEBUG: [Estado GERANDO_ROTEIRO]")
-        try:
-            prompt = (f"Crie um roteiro detalhado para {dados_usuario['destino']} de {dados_usuario['datas']} com orçamento de {dados_usuario['orcamento']}. Inclua uma tabela Markdown com colunas DATA, DIA, LOCAL.")
-            print("DEBUG: Enviando prompt para o Gemini...")
-            response = model.generate_content(prompt)
-            print("DEBUG: Resposta recebida do Gemini.")
-            resposta_completa = response.text
-            tabela_itinerario = extrair_tabela(resposta_completa)
-            descricao_detalhada = resposta_completa.replace(tabela_itinerario, "").strip() if tabela_itinerario else resposta_completa
-            dados_usuario.update({'tabela_itinerario': tabela_itinerario, 'descricao_detalhada': descricao_detalhada})
-            sessoes[session_id]['estado'] = "ROTEIRO_GERADO"
-            print("DEBUG: Roteiro gerado e salvo. Novo estado: ROTEIRO_GERADO.")
-            resumo_tabela = tabela_itinerario if tabela_itinerario else "**Não foi possível extrair o resumo do itinerário.**"
-            return (f"🎉 *Prontinho!* Roteiro para *{dados_usuario['destino']}*:\n\n{resumo_tabela}\n\n"
-                    "O que fazer agora?\n- Digite `pdf` para o roteiro completo\n- Digite `csv` para a planilha\n- Digite `reiniciar` para começar de novo")
-        except Exception as e:
-            print(f"!!!!!!!!!! ERRO NA GERAÇÃO DO ROTEIRO: {e} !!!!!!!!!!")
-            traceback.print_exc()
-            sessoes[session_id]['estado'] = "AGUARDANDO_DESTINO"
-            return f"❌ Opa! Algo deu errado ao gerar o roteiro. Pode ter sido um problema com a API. Vamos recomeçar?"
+        print("DEBUG: [Estado GERANDO_ROTEIRO] - MODO DE TESTE SEM API")
+        sessoes[session_id]['estado'] = "ROTEIRO_GERADO"
+        # Simula uma resposta sem chamar a API do Gemini
+        resposta_fixa = f"🎉 *TESTE BEM-SUCEDIDO!* Se você está vendo isso, o bot está funcionando. O problema é a chamada para a API do Gemini. Por favor, verifique sua chave de API e a configuração de faturamento no Google Cloud."
+        return resposta_fixa
+    # >>> FIM DA ALTERAÇÃO PARA TESTE <<<
 
-    # >>> ALTERAÇÃO AQUI: Lógica completa para PDF/CSV foi restaurada <<<
     elif estado == "ROTEIRO_GERADO":
         print("DEBUG: [Estado ROTEIRO_GERADO]")
         base_url_para_links = dados_usuario.get("base_url", "")
@@ -129,29 +115,12 @@ def processar_mensagem(session_id: str, texto: str, base_url: str) -> str:
             print("AVISO: base_url não encontrada na sessão para gerar links de download.")
         
         if texto_normalizado == "pdf":
-            try:
-                print("DEBUG: Gerando PDF...")
-                caminho_pdf = gerar_pdf(
-                    destino=dados_usuario['destino'], datas=dados_usuario['datas'],
-                    tabela=dados_usuario['tabela_itinerario'], descricao=dados_usuario['descricao_detalhada'],
-                    session_id=session_id)
-                pdf_url = f"{base_url_para_links}/arquivos/{os.path.basename(caminho_pdf)}"
-                return f"📄 *Seu PDF está pronto!* ✅\nClique para baixar: {pdf_url}"
-            except ValueError as e:
-                print(f"DEBUG: Erro ao gerar PDF (ValueError): {e}")
-                return "❌ Desculpe, não consegui gerar o PDF. O itinerário parece incompleto."
+            # Para o teste, vamos retornar uma mensagem simples
+            return "📄 Modo de teste: O PDF seria gerado aqui."
 
         elif texto_normalizado == "csv":
-            try:
-                print("DEBUG: Gerando CSV...")
-                caminho_csv = csv_generator(
-                    tabela=dados_usuario['tabela_itinerario'],
-                    session_id=session_id)
-                csv_url = f"{base_url_para_links}/arquivos/{os.path.basename(caminho_csv)}"
-                return f"📊 *Seu arquivo CSV está pronto!* ✅\nClique para baixar: {csv_url}"
-            except ValueError as e:
-                print(f"DEBUG: Erro ao gerar CSV (ValueError): {e}")
-                return "❌ Desculpe, não consegui gerar o CSV. O itinerário parece incompleto."
+             # Para o teste, vamos retornar uma mensagem simples
+            return "📊 Modo de teste: O CSV seria gerado aqui."
         else:
             return "🤔 Não entendi... Digite `pdf`, `csv` ou `reiniciar`."
 
@@ -197,12 +166,10 @@ application.add_error_handler(handle_error)
 # --- Rotas Flask ---
 @app.route('/arquivos/<filename>')
 def download_file(filename): return send_from_directory('arquivos', filename, as_attachment=True)
-
 @app.route('/telegram_webhook', methods=['POST'])
 async def telegram_webhook():
     await application.update_queue.put(Update.de_json(request.get_json(force=True), application.bot))
     return "ok", 200
-
 @app.route('/')
 def index(): return "Servidor do vIAjante está no ar!", 200
 
