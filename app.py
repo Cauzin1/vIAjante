@@ -1,4 +1,4 @@
-# app.py - Versão de Teste de Eliminação (Sem chamada à API Gemini)
+""" # app.py - Versão de Teste de Eliminação (Sem chamada à API Gemini)
 
 import os
 import re
@@ -192,4 +192,112 @@ def index(): return "Servidor do vIAjante está no ar!", 200
 
 # --- Inicialização ---
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=os.getenv("PORT", 3000), debug=True)
+    app.run(host='0.0.0.0', port=os.getenv("PORT", 3000), debug=True) """
+
+# app.py - Versão de Teste de Eliminação (Sem chamada à API Gemini)
+
+import os
+import re
+import traceback
+import asyncio
+from flask import Flask, request, send_from_directory
+from dotenv import load_dotenv
+import google.generativeai as genai
+
+import telegram
+from telegram import Update
+from telegram.ext import Application, MessageHandler, filters, ContextTypes
+
+from utils.pdf_generator import gerar_pdf
+from utils.csv_generator import csv_generator
+from utils.validators import validar_destino, validar_data, validar_orcamento, remover_acentos
+
+# --- Configuração ---
+load_dotenv()
+GEMINI_KEY = os.getenv("GEMINI_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") 
+app = Flask(__name__)
+sessoes = {}
+
+# --- Lógica do Bot (Cérebro) ---
+def extrair_tabela(texto: str) -> str: return ""
+
+def processar_mensagem(session_id: str, texto: str, base_url: str) -> str:
+    if session_id not in sessoes:
+        sessoes[session_id] = {'estado': 'AGUARDANDO_DESTINO', 'dados': {}}
+    
+    sessoes[session_id]['dados']['base_url'] = base_url
+    estado = sessoes[session_id]['estado']
+    dados_usuario = sessoes[session_id]['dados']
+    texto_normalizado = texto.strip().lower()
+
+    if texto_normalizado == "reiniciar":
+        sessoes[session_id] = {'estado': 'AGUARDANDO_DESTINO', 'dados': {}}
+        return "🔄 Certo! Vamos começar uma nova viagem."
+
+    if estado == "AGUARDANDO_DESTINO":
+        if not validar_destino(texto_normalizado):
+            return "❌ *País não reconhecido*. Por favor, informe um país europeu válido."
+        
+        dados_usuario["destino"] = texto.strip().title()
+        sessoes[session_id]['estado'] = "AGUARDANDO_DATAS"
+        return (f"✈️ *{dados_usuario['destino']}*! Ótima escolha! Quando você vai viajar? (formato `DD/MM a DD/MM`)")
+
+    elif estado == "AGUARDANDO_DATAS":
+        if not validar_data(texto_normalizado):
+            return "❌ *Formato incorreto*. Por favor, use: `DD/MM a DD/MM`."
+        
+        dados_usuario["datas"] = texto_normalizado
+        sessoes[session_id]['estado'] = "AGUARDANDO_ORCAMENTO"
+        return "💰 *Quase lá!* Qual o seu orçamento total em Reais (R$)?"
+
+    elif estado == "AGUARDANDO_ORCAMENTO":
+        if not validar_orcamento(texto_normalizado):
+            return "❌ *Valor inválido*. Por favor, informe um número."
+        
+        dados_usuario["orcamento"] = texto_normalizado
+        sessoes[session_id]['estado'] = "GERANDO_ROTEIRO"
+        return (f"⏱️ *Perfeito!* Preparando seu roteiro... Me mande um `ok` para continuar.")
+
+    # >>> AQUI ESTÁ A MUDANÇA PARA O TESTE <<<
+    elif estado == "GERANDO_ROTEIRO":
+        sessoes[session_id]['estado'] = "ROTEIRO_GERADO"
+        resposta_fixa = f"🎉 *TESTE BEM-SUCEDIDO!* Se você está vendo isso, o bot está funcionando. O problema é 100% a chamada para a API do Gemini. A causa mais provável é a configuração da sua chave de API ou do faturamento no Google Cloud."
+        return resposta_fixa
+    
+    elif estado == "ROTEIRO_GERADO":
+        return "Modo de teste: O roteiro foi gerado. Digite `reiniciar` para começar de novo."
+
+    return "Não entendi, por favor, tente novamente."
+
+# --- Integração com Telegram ---
+if not TELEGRAM_TOKEN: raise ValueError("Token do Telegram não encontrado!")
+application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    session_id = str(update.message.chat_id)
+    texto_recebido = update.message.text
+    try:
+        base_url = WEBHOOK_URL or "http://localhost:3000"
+        if session_id not in sessoes:
+            sessoes[session_id] = {'estado': 'AGUARDANDO_DESTINO', 'dados': {}}
+            resposta = ("🌟 Olá! ✈️ Eu sou o vIAjante...\n\nPra começar, pra qual *país* você quer viajar?")
+        else:
+            resposta = processar_mensagem(session_id, texto_recebido, base_url)
+        
+        if resposta:
+            await context.bot.send_message(chat_id=session_id, text=resposta, parse_mode=telegram.constants.ParseMode.MARKDOWN)
+    except Exception as e:
+        print(f"!!!!!!!!!! ERRO GERAL NO HANDLE: {e} !!!!!!!!!!"); traceback.print_exc()
+        await context.bot.send_message(chat_id=session_id, text="Desculpe, encontrei um erro interno grave.")
+
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_telegram_message))
+
+# --- Rotas Flask ---
+@app.route('/telegram_webhook', methods=['POST'])
+async def telegram_webhook():
+    await application.update_queue.put(Update.de_json(request.get_json(force=True), application.bot))
+    return "ok", 200
+@app.route('/')
+def index(): return "Servidor de Teste do vIAjante está no ar!", 200
