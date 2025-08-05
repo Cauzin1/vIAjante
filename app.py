@@ -115,12 +115,29 @@ def processar_mensagem(session_id: str, texto: str, base_url: str) -> str:
             print("AVISO: base_url não encontrada na sessão para gerar links de download.")
         
         if texto_normalizado == "pdf":
-            # Para o teste, vamos retornar uma mensagem simples
-            return "📄 Modo de teste: O PDF seria gerado aqui."
+            try:
+                print("DEBUG: Gerando PDF...")
+                caminho_pdf = gerar_pdf(
+                    destino=dados_usuario['destino'], datas=dados_usuario['datas'],
+                    tabela=dados_usuario.get('tabela_itinerario', ''), descricao=dados_usuario.get('descricao_detalhada', 'Não disponível.'),
+                    session_id=session_id)
+                pdf_url = f"{base_url_para_links}/arquivos/{os.path.basename(caminho_pdf)}"
+                return f"📄 *Seu PDF está pronto!* ✅\nClique para baixar: {pdf_url}"
+            except ValueError as e:
+                print(f"DEBUG: Erro ao gerar PDF (ValueError): {e}")
+                return "❌ Desculpe, não consegui gerar o PDF. O itinerário parece incompleto."
 
         elif texto_normalizado == "csv":
-             # Para o teste, vamos retornar uma mensagem simples
-            return "📊 Modo de teste: O CSV seria gerado aqui."
+            try:
+                print("DEBUG: Gerando CSV...")
+                caminho_csv = csv_generator(
+                    tabela=dados_usuario.get('tabela_itinerario', ''),
+                    session_id=session_id)
+                csv_url = f"{base_url_para_links}/arquivos/{os.path.basename(caminho_csv)}"
+                return f"📊 *Seu arquivo CSV está pronto!* ✅\nClique para baixar: {csv_url}"
+            except ValueError as e:
+                print(f"DEBUG: Erro ao gerar CSV (ValueError): {e}")
+                return "❌ Desculpe, não consegui gerar o CSV. O itinerário parece incompleto."
         else:
             return "🤔 Não entendi... Digite `pdf`, `csv` ou `reiniciar`."
 
